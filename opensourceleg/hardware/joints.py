@@ -1,3 +1,5 @@
+from typing import Optional
+
 import os
 import time
 
@@ -39,6 +41,7 @@ class Joint(DephyActpack):
 
     Parameters:
         name (str): Name of the joint. Defaults to knee.
+        firmware_version (str): Firmware version of the actpack. Defaults to 7.2.0.
         port (str): Port to which the actpack is connected. Defaults to None.
         baud_rate(int): Baud rate of the actpack. Defaults to 230400.
         gear_ratio (float): Gear ratio of the joint. Defaults to 1.0.
@@ -50,6 +53,8 @@ class Joint(DephyActpack):
         enabled in addition to the default opensourceleg's logging routine.
         logger (Logger): Logger instance to be used for logging. If no logger is provided, a new
         logger will be used.
+        stop_motor_on_disconnect (bool): If True, the motor will be stopped when the actpack is
+        disconnected. Defaults to False.
     """
 
     def __init__(
@@ -64,6 +69,7 @@ class Joint(DephyActpack):
         logger: Logger = Logger(),
         debug_level: int = 0,
         dephy_log: bool = False,
+        stop_motor_on_disconnect: bool = False,
     ) -> None:
 
         super().__init__(
@@ -75,15 +81,17 @@ class Joint(DephyActpack):
             logger=logger,
             debug_level=debug_level,
             dephy_log=dephy_log,
+            stop_motor_on_disconnect=stop_motor_on_disconnect,
         )
 
         self._gear_ratio: float = gear_ratio
         self._is_homed: bool = False
         self._has_loadcell: bool = has_loadcell
-        self._encoder_map = None
 
         self._motor_zero_pos = 0.0
         self._joint_zero_pos = 0.0
+
+        self._encoder_map = None
 
         self._max_temperature: float = MAX_CASE_TEMPERATURE
 
@@ -95,10 +103,10 @@ class Joint(DephyActpack):
 
         if os.path.isfile(path=f"./{self.actuator_name}_encoder_map.npy"):
             coefficients = np.load(file=f"./{self.actuator_name}_encoder_map.npy")
-            self._encoder_map = np.polynomial.polynomial.Polynomial(coef=coefficients)
+            self._encoder_map = np.polynomial.polynomial.Polynomial(coef=coefficients)  # type: ignore
         else:
             self._log.debug(
-                msg=f"[{self.actuator_name}] No encoder map found. Please run the calibration routine."
+                msg=f"[{self.actuator_name}] No encoder map found. Please run the make_encoder_map routine if you need more accurate joint position."
             )
 
     def home(
@@ -154,8 +162,8 @@ class Joint(DephyActpack):
             self._log.warning(msg="Homing interrupted.")
             return
 
-        _motor_zero_pos = self.motor_encoder_counts
-        _joint_zero_pos = self.joint_encoder_counts
+        self.set_motor_zero_position(position=self.motor_position)
+        self.set_joint_zero_position(position=self.joint_position)
 
         time.sleep(0.1)
 
@@ -163,16 +171,18 @@ class Joint(DephyActpack):
         _zero_pos_joint: int = 0
 
         if "ankle" in self._actuator_name.lower():
-            _zero_pos = int((np.deg2rad(30) * self.gear_ratio) / RAD_PER_COUNT)
-            _zero_pos_joint = int(np.deg2rad(30) / RAD_PER_COUNT)
-
-        self.set_motor_zero_position(position=(_motor_zero_pos + _zero_pos))
-        self.set_joint_zero_position(position=(_joint_zero_pos + _zero_pos_joint))
+            self.set_joint_direction(-1.0)
+            self.set_joint_offset(-np.deg2rad(30))
+            self.set_motor_offset(np.deg2rad(30) * self.gear_ratio)
+        else:
+            self.set_joint_direction(-1.0)
+            self.set_joint_offset(0.0)
+            self.set_motor_offset(0.0)
 
         self._is_homed = True
         self._log.info(f"[{self._actuator_name}] Homing complete.")
 
-    def make_encoder_map(self) -> None:
+    def make_encoder_map(self, overwrite=False) -> None:
         """
         This method makes a lookup table to calculate the position measured by the joint encoder.
         This is necessary because the magnetic output encoders are nonlinear.
@@ -197,6 +207,12 @@ class Joint(DephyActpack):
             )
             return
 
+        if os.path.exists(f"./{self._actuator_name}_encoder_map.npy") and not overwrite:
+            self._log.info(
+                msg=f"[{self.__repr__()}] Encoder map exists. Skipping encoder map creation."
+            )
+            return
+
         self.set_mode(mode=self.control_modes.current)
         self.set_current_gains()
         time.sleep(0.1)
@@ -206,21 +222,23 @@ class Joint(DephyActpack):
         time.sleep(0.1)
         self.set_output_torque(torque=0.0)
 
-        _joint_position_array = []
+        _joint_encoder_array = []
         _output_position_array = []
 
         self._log.info(
-            msg=f"[{self.__repr__()}] Please manually move the joint numerous times through its full range of motion for 10 seconds. \nPress any key to continue."
+            msg=f"[{self.__repr__()}] Please manually move the joint numerous times through its full range of motion for 10 seconds. \n{input('Press any key when you are ready to start.')}"
         )
 
         _start_time: float = time.time()
 
         try:
             while time.time() - _start_time < 10:
+                self._log.info(
+                    msg=f"[{self.__repr__()}] Mapping joint encoder: {10 - time.time() + _start_time} seconds left."
+                )
                 self.update()
-                _joint_position_array.append(self.joint_position)
+                _joint_encoder_array.append(self._data.ank_ang)
                 _output_position_array.append(self.output_position)
-
                 time.sleep(1 / self.frequency)
 
         except KeyboardInterrupt:
@@ -230,11 +248,11 @@ class Joint(DephyActpack):
         self._log.info(msg=f"[{self.__repr__()}] You may now stop moving the joint.")
 
         _power = np.arange(4.0)
-        _a_mat = np.array(_joint_position_array).reshape(-1, 1) ** _power
-        _beta = np.linalg.lstsq(_a_mat, _output_position_array, rcond=None)[0]
+        _a_mat = np.array(_joint_encoder_array).reshape(-1, 1) ** _power
+        _beta = np.linalg.lstsq(_a_mat, _output_position_array, rcond=None)
         _coeffs = _beta[0]
 
-        self._encoder_map = np.polynomial.polynomial.Polynomial(coef=_coeffs)
+        self.set_encoder_map(np.polynomial.polynomial.Polynomial(coef=_coeffs))
 
         np.save(file=f"./{self._actuator_name}_encoder_map.npy", arr=_coeffs)
         self._log.info(msg=f"[{self.__repr__()}] Encoder map saved.")
@@ -330,36 +348,6 @@ class Joint(DephyActpack):
             ff=ff,
         )
 
-    def convert_to_joint_impedance(
-        self,
-        K: float = 100,
-        B: float = 40,
-    ):
-        joint_stiffness = (K / NM_PER_RAD_TO_K) * self.gear_ratio**2
-        joint_damping = (B / NM_S_PER_RAD_TO_B) * self.gear_ratio**2
-
-        return joint_stiffness, joint_damping
-
-    def convert_to_motor_impedance(
-        self,
-        K: float = 100,
-        B: float = 40,
-    ):
-        motor_stiffness = K / NM_PER_RAD_TO_K
-        motor_damping = B / NM_S_PER_RAD_TO_B
-
-        return motor_stiffness, motor_damping
-
-    def convert_to_pid_impedance(
-        self,
-        K: float = 0.08922,
-        B: float = 0.0038070,
-    ):
-        pid_stiffness = (K / self.gear_ratio**2) * NM_PER_RAD_TO_K
-        pid_damping = (B / self.gear_ratio**2) * NM_S_PER_RAD_TO_B
-
-        return pid_stiffness, pid_damping
-
     @property
     def joint_name(self) -> str:
         """name (str): Name of the joint."""
@@ -432,13 +420,13 @@ class MockJoint(Joint, MockDephyActpack):
         logger: Logger = Logger(),
         debug_level: int = 0,
         dephy_log: bool = False,
+        stop_motor_on_disconnect: bool = False,
     ) -> None:
 
         MockDephyActpack.__init__(self, name=name, port=port)
         self._gear_ratio: float = gear_ratio
         self._is_homed: bool = False
         self._has_loadcell: bool = has_loadcell
-        self._encoder_map = None
 
         self._motor_zero_pos = 0.0
         self._joint_zero_pos = 0.0
