@@ -335,11 +335,6 @@ class OpenSourceLeg:
         Updates the joints and load cells connected to the OSL. It also checks if any of the joints are
         overheating, and if so, it will safely exit the program.
 
-        Parameters:
-            log_data (bool): If True, all the variables configured with osl.logger will be automatically
-                             logged when the update method is called. Defaults to False.
-
-
         """
         if self.has_knee:
             self._knee.update()
