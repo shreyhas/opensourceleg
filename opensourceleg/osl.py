@@ -47,7 +47,7 @@ class OpenSourceLeg:
         frequency : int, optional
             The frequency of the control loop, by default 200
         file_name : str, optional
-            The name of the log file, by default "./osl.log"
+            The name of the log file, by default "./osl"
         """
 
         self._frequency: int = frequency
@@ -330,7 +330,6 @@ class OpenSourceLeg:
 
     def update(
         self,
-        log_data: bool = False,
     ) -> None:
         """
         Updates the joints and load cells connected to the OSL. It also checks if any of the joints are
@@ -365,8 +364,7 @@ class OpenSourceLeg:
         if self.has_loadcell:
             self._loadcell.update()
 
-        if log_data:
-            self.log.data()
+        self.log.update()
 
         if hasattr(self, "_safety_attributes"):
             for safety_attribute_name in self._safety_attributes:
