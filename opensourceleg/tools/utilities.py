@@ -245,17 +245,27 @@ class SaturatingRamp:
     https://github.com/tkevinbest
     """
 
-    def __init__(self, loop_frequency=100, ramp_time=1.0) -> None:
+    def __init__(self, loop_frequency=100, ramp_time: float = 1.0) -> None:
         """
         Args:
             loop_frequency (int, optional): Rate in Hz (default 100 Hz). Defaults to 100.
             ramp_time (float, optional): Time to complete the ramp. Defaults to 1.0.
         """
-        self.delta_per_update = 1.0 / (loop_frequency * ramp_time)
+        self._loop_frequency = loop_frequency
+        self.ramp_time = ramp_time
         self.value = 0.0
 
     def __repr__(self) -> str:
         return f"SaturatingRamp"
+
+    @property
+    def ramp_time(self):
+        return self._ramp_time
+
+    @ramp_time.setter
+    def ramp_time(self, value):
+        self._ramp_time = value
+        self._delta_per_update = 1.0 / (self._loop_frequency * self._ramp_time)
 
     def update(self, enable_ramp=False):
         """
@@ -273,13 +283,19 @@ class SaturatingRamp:
             value (float): Scalar between 0 and 1.
         """
         if enable_ramp:
-            delta = self.delta_per_update
+            delta = self._delta_per_update
         else:
-            delta = -1 * self.delta_per_update
+            delta = -1 * self._delta_per_update
         self.value += delta
 
         self.value = min(max(self.value, 0), 1)
         return self.value
+
+    def reset(self):
+        """
+        Resets the ramp value to 0.0
+        """
+        self.value = 0.0
 
 
 def get_active_ports():

@@ -28,7 +28,7 @@ def test_edge_detector_update():
 def test_saturating_ramp_init():
 
     sri = SaturatingRamp(loop_frequency=100, ramp_time=1.0)
-    assert sri.delta_per_update == 1.0 / 100
+    assert sri._delta_per_update == 1.0 / 100
     assert sri.value == 0.0
 
 

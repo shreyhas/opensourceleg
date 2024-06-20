@@ -4,6 +4,7 @@ import time
 import numpy as np
 
 from ..tools.logger import Logger
+from ..tools.utilities import SaturatingRamp
 from .actuators import (
     MAX_CASE_TEMPERATURE,
     NM_PER_RAD_TO_K,
@@ -78,6 +79,9 @@ class Joint(DephyActpack):
             self._log.debug(
                 msg=f"[{self._name}] No encoder map found. Please run the make_encoder_map routine if you need more accurate joint position."
             )
+
+        self._torque_ramp = SaturatingRamp(loop_frequency=frequency)
+        self._torque_ramp_active = False
 
     def home(
         self,
@@ -223,6 +227,39 @@ class Joint(DephyActpack):
 
         np.save(file=f"./{self._name}_encoder_map.npy", arr=_coeffs)
         self._log.info(msg=f"[{self.__repr__()}] Encoder map saved.")
+
+    def begin_torque_ramp(self, ramp_time: float) -> None:
+        if self._mode not in [
+            self.control_modes.current,
+            self.control_modes.impedance,
+            self.control_modes.position,
+        ]:
+            self._log.warning(
+                msg=f"[{self.__repr__()}] Cannot ramp motor torque in mode {self._mode}"
+            )
+            return
+        self._torque_ramp.reset()
+        self._torque_ramp.ramp_time = ramp_time
+        self._torque_ramp_active = True
+
+    def update(self):
+        """
+        This method updates any joint-specific logic before calling the actuator's update method.
+        """
+        if self._torque_ramp_active:
+            torque_scalar = self._torque_ramp.update()
+            if self.mode == self.control_modes.current:
+                self.set_current = lambda x: super().set_current(x * torque_scalar)
+            elif self.mode == self.control_modes.impedance:
+                pass
+            elif self.mode == self.control_modes.position:
+                pass
+            if torque_scalar >= 1.0:
+                self._torque_ramp_active = False
+        else:
+            torque_scalar = 1.0
+
+        super().update()
 
     def set_max_temperature(self, temperature: float) -> None:
         """
